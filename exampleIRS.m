@@ -1,0 +1,85 @@
+fc = 3e8;
+c = physconst('lightspeed');
+lambda = c/fc;
+rng(2023);
+
+% Setup surface
+Nr = 10;
+Nc = 20;
+dr = 0.5*lambda;
+dc = 0.5*lambda;
+
+% construct surface
+ris = helperRISSurface('Size',[Nr Nc],'ElementSpacing',[dr dc],...
+    'ReflectorElement',phased.IsotropicAntennaElement,'OperatingFrequency',fc)
+% scene
+dbr = 50;
+pos_ap = [0;0;0];
+pos_ris = [dbr;0;0]; 
+v = zeros(3,1);
+
+du = 50;
+dv = -5;
+pos_ue = [du;dv;0];
+
+% compute the range and angle of the RIS from the base station and the UE
+[r_ap_ris,ang_ap_ris] = rangeangle(pos_ap,pos_ris);
+[r_ue_ris,ang_ue_ris] = rangeangle(pos_ue,pos_ris);
+
+% signal
+fs = 3e6;
+x = 2*randi(2,[100 1])-3;
+tx = phased.Transmitter('PeakPower',50e-3,'Gain',0);
+xt = tx(x);
+N0dB = -60-30;
+
+% channel
+chanAPToRIS = phased.FreeSpace('SampleRate',fs,'PropagationSpeed',c,'MaximumDistanceSource','Property','MaximumDistance',500);
+chanRISToUE = phased.FreeSpace('SampleRate',fs,'PropagationSpeed',c,'MaximumDistanceSource','Property','MaximumDistance',500);
+chanAPToUE = phased.FreeSpace('SampleRate',fs,'PropagationSpeed',c,'MaximumDistanceSource','Property','MaximumDistance',500);
+
+% LOS path propagation
+yref = chanAPToUE(xt,pos_ap,pos_ue,v,v);
+SNRref = pow2db(bandpower(yref))-N0dB
+
+rcoeff_ris = ones(Nr*Nc,1);
+x_ris_in = chanAPToRIS(xt,pos_ap,pos_ris,v,v);
+x_ris_out = ris(x_ris_in,ang_ap_ris,ang_ue_ris,rcoeff_ris);
+ylosris = chanRISToUE(x_ris_out,pos_ris,pos_ue,v,v)+chanAPToUE(xt,pos_ap,pos_ue,v,v);
+SNRlosris = pow2db(bandpower(ylosris))-N0dB
+
+% channel estimation
+stv = getSteeringVector(ris);
+r_ue_ap = norm(pos_ap-pos_ue);
+hd = db2mag(-fspl(r_ue_ap,lambda))*exp(1i*2*pi*r_ue_ap/c);
+g = db2mag(-fspl(r_ap_ris,lambda))*exp(1i*2*pi*r_ap_ris/c)*stv(fc,ang_ap_ris);
+hr = db2mag(-fspl(r_ue_ris,lambda))*exp(1i*2*pi*r_ue_ris/c)*stv(fc,ang_ue_ris);
+
+% compute optimal phase control
+rcoeff_ris = exp(1i*(angle(hd)-angle(hr)-angle(g)));
+
+% rerun simulation
+x_ris_in = chanAPToRIS(xt,pos_ap,pos_ris,v,v);
+x_ris_out = ris(x_ris_in,ang_ap_ris,ang_ue_ris,rcoeff_ris);
+ylosriso = chanRISToUE(x_ris_out,pos_ris,pos_ue,v,v)+chanAPToUE(xt,pos_ap,pos_ue,v,v);
+SNRlosriso = pow2db(bandpower(ylosriso))-N0dB
+
+rcoeff_ris = exp(1i*(-angle(hr)-angle(g)));
+x_ris_in = chanAPToRIS(xt,pos_ap,pos_ris,v,v);
+x_ris_out = ris(x_ris_in,ang_ap_ris,ang_ue_ris,rcoeff_ris);
+yriso = chanRISToUE(x_ris_out,pos_ris,pos_ue,v,v);
+SNRriso = pow2db(bandpower(yriso))-N0dB
+
+Ncparam = 5:5:50;
+[SNRlosris_param,SNRris_param,SNRlos_param] = helperRISSimulation(xt,Ncparam,chanAPToUE,chanAPToRIS,chanRISToUE,pos_ap,pos_ris,pos_ue,v,fc,c,SNRref);
+plot(Ncparam.'*10,log2(1+db2pow([SNRlosris_param;SNRris_param;SNRlos_param])));
+legend('LOS+RIS','RIS','LOS');
+xlabel('Number of Elements');
+ylabel('Data Rate (bps/Hz)')
+
+dbrparam = 5:5:50;
+SNRris_param = helperRISPlacementSimulation(xt,dbrparam,ris,chanAPToUE,chanAPToRIS,chanRISToUE,pos_ap,pos_ue,v,fc,c);
+plot(dbrparam,SNRris_param);
+xlabel('RIS Position along X (m)');
+ylabel('SNR (dB)')
+
